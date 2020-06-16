@@ -16,7 +16,6 @@ import (
 	k8serror "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
-	pvController "sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 )
 
 type ActionType string
@@ -163,7 +162,7 @@ func (p *LocalPathProvisioner) getRandomPathOnNode(node string) (string, error) 
 	return path, nil
 }
 
-func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v1.PersistentVolume, error) {
+func (p *LocalPathProvisioner) Provision(opts ProvisionOptions) (*v1.PersistentVolume, error) {
 	pvc := opts.PVC
 	if pvc.Spec.Selector != nil {
 		return nil, fmt.Errorf("claim.Spec.Selector is not supported")
@@ -177,7 +176,7 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 	if opts.SelectedNode == nil {
 		return nil, fmt.Errorf("configuration error, no node was specified")
 	}
-
+	// 1. 获得该节点的pv目录, 如果在config.json中没有具体设置, 则采用key=DEFAULT_PATH_FOR_NON_LISTED_NODES所对应的目录
 	basePath, err := p.getRandomPathOnNode(node.Name)
 	if err != nil {
 		return nil, err
@@ -189,15 +188,23 @@ func (p *LocalPathProvisioner) Provision(opts pvController.ProvisionOptions) (*v
 	path := filepath.Join(basePath, folderName)
 	logrus.Infof("Creating volume %v at %v:%v", name, node.Name, path)
 
+	//createCmdsForPath := []string{
+	//	"mkdir",
+	//	"-m", "0777",
+	//	"-p",
+	//}
+
 	createCmdsForPath := []string{
-		"mkdir",
-		"-m", "0777",
-		"-p",
+		"/bin/sh",
+		"/tmp/add.sh",
 	}
+
+	// 2. 创建一个busybox pod去node节点中创建该pv目录
 	if err := p.createHelperPod(ActionTypeCreate, createCmdsForPath, name, path, node.Name); err != nil {
 		return nil, err
 	}
 
+	// 3. 返回一个pv
 	fs := v1.PersistentVolumeFilesystem
 	hostPathType := v1.HostPathDirectoryOrCreate
 	return &v1.PersistentVolume{
@@ -248,7 +255,8 @@ func (p *LocalPathProvisioner) Delete(pv *v1.PersistentVolume) (err error) {
 	}
 	if pv.Spec.PersistentVolumeReclaimPolicy != v1.PersistentVolumeReclaimRetain {
 		logrus.Infof("Deleting volume %v at %v:%v", pv.Name, node, path)
-		cleanupCmdsForPath := []string{"rm", "-rf"}
+		//cleanupCmdsForPath := []string{"rm", "-rf"}
+		cleanupCmdsForPath := []string{"/bin/sh", "/tmp/del.sh"}
 		if err := p.createHelperPod(ActionTypeDelete, cleanupCmdsForPath, pv.Name, path, node); err != nil {
 			logrus.Infof("clean up volume %v failed: %v", pv.Name, err)
 			return err
@@ -320,10 +328,13 @@ func (p *LocalPathProvisioner) createHelperPod(action ActionType, cmdsForPath []
 		return fmt.Errorf("invalid path %v for %v: cannot find parent dir or volume dir", action, path)
 	}
 
+
+
 	hostPathType := v1.HostPathDirectoryOrCreate
 	helperPod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: string(action) + "-" + name,
+			Namespace: p.namespace,
 		},
 		Spec: v1.PodSpec{
 			RestartPolicy: v1.RestartPolicyNever,
@@ -344,6 +355,11 @@ func (p *LocalPathProvisioner) createHelperPod(action ActionType, cmdsForPath []
 							ReadOnly:  false,
 							MountPath: "/data/",
 						},
+						{
+							Name:      "script",
+							ReadOnly:  false,
+							MountPath: "/tmp",
+						},
 					},
 					ImagePullPolicy: v1.PullIfNotPresent,
 				},
@@ -355,6 +371,26 @@ func (p *LocalPathProvisioner) createHelperPod(action ActionType, cmdsForPath []
 						HostPath: &v1.HostPathVolumeSource{
 							Path: parentDir,
 							Type: &hostPathType,
+						},
+					},
+				},
+				{
+					Name: "script",
+					VolumeSource: v1.VolumeSource{
+						ConfigMap: &v1.ConfigMapVolumeSource{
+							LocalObjectReference: v1.LocalObjectReference{
+								Name: "script",
+							},
+							Items: []v1.KeyToPath{
+								{
+									Key: "add.sh",
+									Path: "add.sh",
+								},
+								{
+									Key: "del.sh",
+									Path: "del.sh",
+								},
+							},
 						},
 					},
 				},

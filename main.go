@@ -11,8 +11,13 @@ import (
 	"github.com/urfave/cli"
 
 	clientset "k8s.io/client-go/kubernetes"
-	pvController "sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
+	//"k8s.io/client-go/rest"
+	//pvController "sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/informers"
+	"time"
+	"k8s.io/client-go/tools/cache"
+	"encoding/json"
 )
 
 var (
@@ -93,9 +98,7 @@ func startDaemon(c *cli.Context) error {
 	//	return errors.Wrap(err, "unable to get client config")
 	//}
 
-
-
-	config, err := clientcmd.BuildConfigFromFlags("", "")
+	config, err := clientcmd.BuildConfigFromFlags("", "/root/.kube/config")
 	if err != nil {
 		panic(err)
 	}
@@ -131,16 +134,42 @@ func startDaemon(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	pc := pvController.NewProvisionController(
+	pc := NewProvisionController(
 		kubeClient,
 		provisionerName,
 		provisioner,
 		serverVersion.GitVersion,
 	)
 	logrus.Debug("Provisioner started")
+	//test(kubeClient, stopCh)
 	pc.Run(stopCh)
 	logrus.Debug("Provisioner stopped")
 	return nil
+}
+
+func test(client clientset.Interface, stopCh chan struct{}) {
+
+	claimHandler := cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(obj interface{}) { print(obj, "ADD") },
+		UpdateFunc: func(oldObj, newObj interface{}) { print(newObj, "UPDATE") },
+		DeleteFunc: func(obj interface{}) {
+			// NOOP. The claim is either in claimsInProgress and in the queue, so it will be processed as usual
+			// or it's not in claimsInProgress and then we don't care
+			print(obj, "DELETE")
+		},
+	}
+
+	informer := informers.NewSharedInformerFactory(client, time.Second)
+	claimInformer := informer.Core().V1().PersistentVolumeClaims().Informer()
+
+	claimInformer.AddEventHandler(claimHandler)
+
+	go claimInformer.Run(stopCh)
+}
+
+func print(obj interface{}, t string) {
+	claim, _ := json.MarshalIndent(obj, "", "\t")
+	logrus.Infof("t : %v", t, string(claim))
 }
 
 func main() {

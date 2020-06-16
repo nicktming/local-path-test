@@ -1,0 +1,1 @@
+kubectl create configmap script -n local-path-storage --from-file=./cm

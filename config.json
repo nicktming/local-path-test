@@ -1,0 +1,8 @@
+{
+  "nodePathMap":[
+    {
+      "node":"phoenix-nfs-3",
+      "paths":["/mnt/mtz_test"]
+    }
+  ]
+}

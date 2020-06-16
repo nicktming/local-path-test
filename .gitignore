@@ -1,4 +1,5 @@
 # OSX leaves these everywhere on SMB shares
+local-path-provisioner
 ._*
 
 # OSX trash
